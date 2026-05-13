@@ -260,10 +260,7 @@ func (c *startCommand) Run(s *runtime.Scheme, log logging.Logger) error { //noli
 	// If the option to restrict event emission to namespaced resources if active,
 	// we create a filter function accordingly
 	if c.RestrictNamespacedEvents {
-		eventFilterFns = append(eventFilterFns, func(obj runtime.Object, _ event.Event) bool {
-			m, err := kmeta.Accessor(obj)
-			return (err == nil && m.GetNamespace() != "" && m.GetNamespace() != "default")
-		})
+		eventFilterFns = append(eventFilterFns, restrictNamespacedEventsFilter)
 	}
 
 	o := controller.Options{
@@ -690,4 +687,14 @@ func (c *startCommand) SetupProbes(mgr ctrl.Manager) error {
 	}
 
 	return nil
+}
+
+func restrictNamespacedEventsFilter(obj runtime.Object, _ event.Event) bool {
+	m, err := kmeta.Accessor(obj)
+	if err != nil {
+		return true
+	}
+
+	ns := m.GetNamespace()
+	return ns == "" || ns == "default"
 }
