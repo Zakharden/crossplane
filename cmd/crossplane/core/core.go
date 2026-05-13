@@ -160,6 +160,29 @@ type startCommand struct {
 	Registry                                 string `hidden:""`
 }
 
+func newManagerCacheOptions(syncInterval time.Duration, namespace string, namespaced bool) cache.Options {
+	o := cache.Options{
+		SyncPeriod: &syncInterval,
+	}
+
+	if namespaced {
+		// This makes the manager cache watch resources only in Crossplane's namespace.
+		// Otherwise, it tries to watch resources in all namespaces, and crashes if the
+		// Crossplane ServiceAccount doesn't have enough permissions.
+		o.DefaultNamespaces = map[string]cache.Config{
+			namespace: {},
+		}
+	}
+
+	return o
+}
+
+func newAPIExtensionsCacheOptions(syncInterval time.Duration) cache.Options {
+	return cache.Options{
+		SyncPeriod: &syncInterval,
+	}
+}
+
 // Run core Crossplane controllers.
 func (c *startCommand) Run(s *runtime.Scheme, log logging.Logger) error { //nolint:gocognit // Only slightly over.
 	if c.EnableCompositionWebhookSchemaValidation {
@@ -193,17 +216,7 @@ func (c *startCommand) Run(s *runtime.Scheme, log logging.Logger) error { //noli
 	// They use their own. They're setup later in this method.
 	eb := record.NewBroadcaster()
 
-	cacheOptions := cache.Options{
-		SyncPeriod: &c.SyncInterval,
-	}
-	if c.WatchCacheNamespaced {
-		// This makes the cache controller watch resources only in crossplane's namespace.
-		// Otherwise, it tries to watch resources in all namespaces, and crashes if the
-		// crossplane ServiceAccount doesn't have enough permissions.
-		cacheOptions.DefaultNamespaces = map[string]cache.Config{
-			c.Namespace: {},
-		}
-	}
+	cacheOptions := newManagerCacheOptions(c.SyncInterval, c.Namespace, c.WatchCacheNamespaced)
 
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme: s,
@@ -358,30 +371,22 @@ func (c *startCommand) Run(s *runtime.Scheme, log logging.Logger) error { //noli
 		log.Info("Alpha feature enabled", "flag", features.EnableAlphaProviderDeletionProtection)
 	}
 
-	cacheOptionsAPIExt := cache.Options{
-		HTTPClient: mgr.GetHTTPClient(),
-		Scheme:     mgr.GetScheme(),
-		Mapper:     mgr.GetRESTMapper(),
-		SyncPeriod: &c.SyncInterval,
+	cacheOptionsAPIExt := newAPIExtensionsCacheOptions(c.SyncInterval)
+	cacheOptionsAPIExt.HTTPClient = mgr.GetHTTPClient()
+	cacheOptionsAPIExt.Scheme = mgr.GetScheme()
+	cacheOptionsAPIExt.Mapper = mgr.GetRESTMapper()
 
-		// When a CRD is deleted, any informers for its GVKs will start trying
-		// to restart their watches, and fail with scary errors. This should
-		// only happen when realtime composition is enabled, and we should GC
-		// the informer within 60 seconds. This handler tries to make the error
-		// a little more informative, and less scary.
-		DefaultWatchErrorHandler: func(_ context.Context, _ *kcache.Reflector, err error) {
-			if errors.Is(io.EOF, err) {
-				// Watch closed normally.
-				return
-			}
-			log.Debug("Watch error - probably due to CRD being uninstalled", "error", err)
-		},
-	}
-
-	if c.WatchCacheNamespaced {
-		cacheOptionsAPIExt.DefaultNamespaces = map[string]cache.Config{
-			c.Namespace: {},
+	// When a CRD is deleted, any informers for its GVKs will start trying
+	// to restart their watches, and fail with scary errors. This should
+	// only happen when realtime composition is enabled, and we should GC
+	// the informer within 60 seconds. This handler tries to make the error
+	// a little more informative, and less scary.
+	cacheOptionsAPIExt.DefaultWatchErrorHandler = func(_ context.Context, _ *kcache.Reflector, err error) {
+		if errors.Is(io.EOF, err) {
+			// Watch closed normally.
+			return
 		}
+		log.Debug("Watch error - probably due to CRD being uninstalled", "error", err)
 	}
 
 	// Claim and XR controllers are started and stopped dynamically by the
